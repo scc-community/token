@@ -68,9 +68,6 @@ interface tokenRecipient { function receiveApproval(address _from, uint256 _valu
 
 contract BasicERC20Token {
     // Public variables of the token
-    string public name;
-    string public symbol;
-    uint8 public decimals = 18;
     // 18 decimals is the strongly suggested default, avoid changing it
     uint256 public totalSupply;
 
@@ -215,15 +212,24 @@ contract SCCCoin is BasicERC20Token {
         52500,
         45000
     ];
+    uint256[3] public phaseRemainNumber = [
+        600000000 * 10 ** uint256(decimals),
+        1050000000 * 10 ** uint256(decimals),
+        1350000000 * 10 ** uint256(decimals)
+    ];
+    /// Each phase contains exactly 38117 Ethereum blocks, which is roughly 1 week,
+    /// See https://www.ethereum.org/crowdsale#scheduling-a-call
+    uint[3] public phaseBlock = [
+        157533,
+        157533,
+        157553
+    ];
 
-    uint256 public TOTAL_NUMBER = 36000000 * 10 ** uint256(decimals);
+    uint256 public TOTAL_NUMBER = 10000000000 * 10 ** uint256(decimals);
 
     uint public constant NUM_OF_PHASE = 3;
 
-    /// Each phase contains exactly 15250 Ethereum blocks, which is roughly 3 days,
-    /// which makes this 10-phase sale period roughly 30 days.
-    /// See https://www.ethereum.org/crowdsale#scheduling-a-call
-    uint public constant BLOCKS_PER_PHASE = 30500;
+    uint public currentPhase = 0;
 
     /// This is where we hold ETH during this token sale. We will not transfer any Ether
     /// out of this address before we invocate the `close` function to finalize the sale.
@@ -239,10 +245,10 @@ contract SCCCoin is BasicERC20Token {
     uint public firstblock = 0;
 
     /// Minimum amount of funds to be raised for the sale to succeed.
-    uint256 public constant GOAL = 200 ether;
+    uint public constant GOAL = 20000 ether;
 
     /// Maximum amount of fund to be raised, the sale ends on reaching this amount.
-    uint256 public constant HARD_CAP = 600 ether;
+    uint public constant HARD_CAP = 60000 ether;
 
     /// A simple stat for emitting events.
     uint256 public totalEthReceived = 0;
@@ -273,6 +279,8 @@ contract SCCCoin is BasicERC20Token {
     event IssueFail(address addr, uint256 ethAmount, uint256 tokenAmount, uint256 leaveToken);
 
     event TransferTarget(address fromAddr, uint256 ethAmount);
+
+    event TurnToNextPhase(uint phase, uint blockNumber);
 
     /// Emitted if the token sale succeeded.
     event SaleSucceeded();
@@ -333,6 +341,7 @@ contract SCCCoin is BasicERC20Token {
             revert();
         }
         firstblock = _firstblock;
+        currentPhase = 0;
         SaleStarted();
     }
 
@@ -345,7 +354,11 @@ contract SCCCoin is BasicERC20Token {
     }
 
     function price() public constant returns (uint tokens) {
-        return computeTokenAmount(1 ether);
+        if(currentPhase < NUM_OF_PHASE) {
+            return exchangeNumber[currentPhase];
+        }else {
+            return exchangeNumber[NUM_OF_PHASE - 1];
+        }
     }
 
     function () payable public{
@@ -355,7 +368,15 @@ contract SCCCoin is BasicERC20Token {
     function issueToken(address recipient) payable inProgress public{
         // We only accept minimum purchase of 0.01 ETH.
         assert(msg.value >= 0.01 ether);
-        uint256 tokens = computeTokenAmount(msg.value);
+        // We only accept maximum purchase of 1000 ETH
+        assert(msg.value <= 10000 ether);
+
+        assert(currentPhase < NUM_OF_PHASE);
+        uint256 tokens;
+        uint256 usingEthAmount;
+        (tokens, usingEthAmount) = computeTokenAmount(msg.value);
+
+        // Check balance again
         if(balanceOf[target] < tokens) {
             IssueFail(
                 recipient,
@@ -365,31 +386,58 @@ contract SCCCoin is BasicERC20Token {
             );
             revert();
         }
-        totalEthReceived = totalEthReceived.add(msg.value);
+        totalEthReceived = totalEthReceived.add(usingEthAmount);
         balanceOf[target] = balanceOf[target].sub(tokens);
         balanceOf[recipient] = balanceOf[recipient].add(tokens);
 
         Issue(
             issueIndex++,
             recipient,
-            msg.value,
+            usingEthAmount,
             tokens
         );
 
         if (!target.send(msg.value)) {
             revert();
         }
-        TransferTarget(recipient, msg.value);
+        if(usingEthAmount < msg.value) {
+            uint256 returnEthAmount = msg.value - usingEthAmount;
+            if(!recipient.send(returnEthAmount)) {
+                revert();
+            }
+        }
     }
 
-    function computeTokenAmount(uint256 ethAmount) internal constant returns (uint256 tokens) {
-        uint phase = (block.number - firstblock).div(BLOCKS_PER_PHASE);
-
-        if (phase >= exchangeNumber.length) {
-            phase = exchangeNumber.length - 1;
+    function computeTokenAmount(uint256 ethAmount) internal returns (uint256 tokens, uint256 usingEthAmount) {
+        uint phase = (block.number - firstblock).div(phaseBlock[currentPhase]);
+        if(phase >= NUM_OF_PHASE) {
+            revert();
         }
-
-        tokens = ethAmount.mul(exchangeNumber[phase]);
+        if(phase > currentPhase) {
+            currentPhase = phase;
+        }
+        tokens = ethAmount.mul(exchangeNumber[currentPhase]);
+        if(tokens < phaseRemainNumber[currentPhase]) {
+            usingEthAmount = ethAmount;
+            phaseRemainNumber[currentPhase] = phaseRemainNumber[currentPhase].sub(tokens);
+        }else if(tokens == phaseRemainNumber[currentPhase]) {
+            phaseRemainNumber[currentPhase] = 0;
+            currentPhase += 1;
+        }else {
+            uint256 remainTokens = phaseRemainNumber[currentPhase];
+            uint256 costEthAmount = remainTokens.div(exchangeNumber[currentPhase]);
+            phaseRemainNumber[currentPhase] = 0;
+            currentPhase += 1;
+            if(currentPhase >= NUM_OF_PHASE) {
+                usingEthAmount = costEthAmount;
+                tokens = remainTokens;
+            }else {
+                uint256 remainEthAmount = ethAmount.sub(costEthAmount);
+                uint256 allocationTokens = remainEthAmount.mul(exchangeNumber[currentPhase]);
+                tokens = allocationTokens.add(remainTokens);
+                usingEthAmount = ethAmount;
+            }
+        }
     }
 
     function saleStarted() public constant returns (bool) {
@@ -397,11 +445,7 @@ contract SCCCoin is BasicERC20Token {
     }
 
     function saleEnded() public constant returns (bool) {
-        return firstblock > 0 && (saleDue() || hardCapReached());
-    }
-
-    function saleDue() public constant returns (bool) {
-        return block.number >= firstblock + BLOCKS_PER_PHASE * NUM_OF_PHASE;
+        return firstblock > 0 && ((currentPhase >= NUM_OF_PHASE) || hardCapReached());
     }
 
     function hardCapReached() public constant returns (bool) {
