@@ -225,8 +225,6 @@ contract SCCCoin is BasicERC20Token {
         157553
     ];
 
-    uint256 public TOTAL_NUMBER = 10000000000 * 10 ** uint256(decimals);
-
     uint public constant NUM_OF_PHASE = 3;
 
     uint public currentPhase = 0;
@@ -332,7 +330,8 @@ contract SCCCoin is BasicERC20Token {
 
     function SCCCoin(address _target) public{
         target = _target;
-        balanceOf[target] = TOTAL_NUMBER;
+        totalSupply = 10000000000 * 10 ** uint256(decimals);
+        balanceOf[target] = totalSupply;
     }
 
     function start(uint _firstblock) public onlyOwner beforeStart {
@@ -422,6 +421,7 @@ contract SCCCoin is BasicERC20Token {
             phaseRemainNumber[currentPhase] = phaseRemainNumber[currentPhase].sub(tokens);
         }else if(tokens == phaseRemainNumber[currentPhase]) {
             phaseRemainNumber[currentPhase] = 0;
+            usingEthAmount = ethAmount;
             currentPhase += 1;
         }else {
             uint256 remainTokens = phaseRemainNumber[currentPhase];
