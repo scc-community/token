@@ -197,32 +197,33 @@ contract BasicERC20Token {
     }
 }
 
+
 /**
  * @title Source Code Chain Token.
  * @author Bertrand Huang - <bertrand.huang@sourcecc.io>.
  */
-contract SCCCoin is BasicERC20Token {
+contract SCCToken is BasicERC20Token {
     using SafeMath for uint256;
     string public name = "Source Code Chain Token";
     string public symbol = "SCC";
     uint public decimals = 18;
 
     uint[3] public exchangeNumber = [
-        60000,
-        52500,
-        45000
+    60000,
+    52500,
+    45000
     ];
     uint256[3] public phaseRemainNumber = [
-        600000000 * 10 ** uint256(decimals),
-        1050000000 * 10 ** uint256(decimals),
-        1350000000 * 10 ** uint256(decimals)
+    600000000 * 10 ** uint256(decimals),
+    1050000000 * 10 ** uint256(decimals),
+    1350000000 * 10 ** uint256(decimals)
     ];
     /// Each phase contains exactly 38117 Ethereum blocks, which is roughly 1 week,
     /// See https://www.ethereum.org/crowdsale#scheduling-a-call
     uint[3] public phaseBlock = [
-        157533,
-        157533,
-        157553
+    157533,
+    315066,
+    472599
     ];
 
     uint public constant NUM_OF_PHASE = 3;
@@ -254,6 +255,19 @@ contract SCCCoin is BasicERC20Token {
     /// Issue event index starting from 0.
     uint public issueIndex = 0;
 
+    bool public isClose = false;
+
+
+    struct IssueToken {
+        address recipient;
+        uint256 tokens;
+        uint256 usingEthAmount;
+    }
+
+    IssueToken[] public issueTokens;
+
+    /// Refund service Charge 1%
+    uint public charge = 1;
     /*
      * EVENTS
      */
@@ -328,7 +342,15 @@ contract SCCCoin is BasicERC20Token {
         }
     }
 
-    function SCCCoin(address _target) public{
+    modifier closeDone {
+        if(isClose) {
+            _;
+        }else {
+            InvalidState("Close function isn't executed");
+        }
+    }
+
+    function SCCToken(address _target) public{
         target = _target;
         totalSupply = 10000000000 * 10 ** uint256(decimals);
         balanceOf[target] = totalSupply;
@@ -346,10 +368,12 @@ contract SCCCoin is BasicERC20Token {
 
     function close() public onlyOwner afterEnd {
         if (totalEthReceived < GOAL) {
+            refund();
             SaleFailed();
         } else {
             SaleSucceeded();
         }
+        isClose = true;
     }
 
     function price() public constant returns (uint tokens) {
@@ -357,6 +381,12 @@ contract SCCCoin is BasicERC20Token {
             return exchangeNumber[currentPhase];
         }else {
             return exchangeNumber[NUM_OF_PHASE - 1];
+        }
+    }
+
+    function withdraw() public onlyOwner closeDone {
+        if(!target.send(this.balance)) {
+            revert();
         }
     }
 
@@ -396,9 +426,16 @@ contract SCCCoin is BasicERC20Token {
             tokens
         );
 
-        if (!target.send(msg.value)) {
-            revert();
-        }
+        issueTokens.push(IssueToken({
+            recipient: recipient,
+            usingEthAmount: usingEthAmount,
+            tokens: tokens
+            }));
+
+        //        if (!target.send(usingEthAmount)) {
+        //            revert();
+        //        }
+
         if(usingEthAmount < msg.value) {
             uint256 returnEthAmount = msg.value - usingEthAmount;
             if(!recipient.send(returnEthAmount)) {
@@ -408,12 +445,11 @@ contract SCCCoin is BasicERC20Token {
     }
 
     function computeTokenAmount(uint256 ethAmount) internal returns (uint256 tokens, uint256 usingEthAmount) {
-        uint phase = (block.number - firstblock).div(phaseBlock[currentPhase]);
-        if(phase >= NUM_OF_PHASE) {
-            revert();
+        if(block.number - firstblock >= phaseBlock[currentPhase]) {
+            currentPhase += 1;
         }
-        if(phase > currentPhase) {
-            currentPhase = phase;
+        if(currentPhase >= NUM_OF_PHASE) {
+            revert();
         }
         tokens = ethAmount.mul(exchangeNumber[currentPhase]);
         if(tokens < phaseRemainNumber[currentPhase]) {
@@ -437,6 +473,29 @@ contract SCCCoin is BasicERC20Token {
                 tokens = allocationTokens.add(remainTokens);
                 usingEthAmount = ethAmount;
             }
+        }
+    }
+
+    function refund() internal {
+        for(uint i=0; i< issueIndex; i++) {
+            uint256 tokens = issueTokens[i].tokens;
+            address recipient = issueTokens[i].recipient;
+
+            /// No enough tokens to refund
+            if(balanceOf[recipient] < tokens) {
+                revert();
+            }
+
+            balanceOf[recipient] = balanceOf[recipient].sub(tokens);
+            balanceOf[target] = balanceOf[target].add(tokens);
+
+            uint256 refundCharge = issueTokens[i].usingEthAmount.div(100).mul(charge);
+            uint256 refundAmount = issueTokens[i].usingEthAmount.sub(refundCharge);
+
+            if(!recipient.send(refundAmount)) {
+                revert();
+            }
+
         }
     }
 
