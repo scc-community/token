@@ -255,8 +255,10 @@ contract SCCToken is BasicERC20Token {
     /// Issue event index starting from 0.
     uint public issueIndex = 0;
 
-    bool public isClose = false;
+    /// Refund event index starting from 0.
+    uint public refundIndex = 0;
 
+    bool public isClose = false;
 
     struct IssueToken {
         address recipient;
@@ -289,6 +291,8 @@ contract SCCToken is BasicERC20Token {
     event Issue(uint issueIndex, address addr, uint256 ethAmount, uint256 tokenAmount);
 
     event IssueFail(address addr, uint256 ethAmount, uint256 tokenAmount, uint256 leaveToken);
+
+    event Refund(uint refundIndex, address addr, uint256 ethAmount, uint256 tokenAmount);
 
     event TransferTarget(address fromAddr, uint256 ethAmount);
 
@@ -347,6 +351,7 @@ contract SCCToken is BasicERC20Token {
             _;
         }else {
             InvalidState("Close function isn't executed");
+            revert();
         }
     }
 
@@ -384,21 +389,37 @@ contract SCCToken is BasicERC20Token {
         }
     }
 
+    function updateCurrentPhase() internal {
+        while(currentPhase < NUM_OF_PHASE && block.number - firstblock >= phaseBlock[currentPhase]) {
+            currentPhase += 1;
+        }
+    }
+
     function withdraw() public onlyOwner closeDone {
         if(!target.send(this.balance)) {
             revert();
         }
     }
 
+//    function setCurrentPhase(uint phase) public onlyOwner {
+//        if(phase >= NUM_OF_PHASE) {
+//            phase = NUM_OF_PHASE;
+//        }
+//        if(currentPhase < phase) {
+//            currentPhase = phase;
+//        }
+//    }
+
     function () payable public{
         issueToken(msg.sender);
     }
+
 
     function issueToken(address recipient) payable inProgress public{
         // We only accept minimum purchase of 0.01 ETH.
         assert(msg.value >= 0.01 ether);
         // We only accept maximum purchase of 1000 ETH
-        assert(msg.value <= 10000 ether);
+        assert(msg.value <= 1000 ether);
 
         assert(currentPhase < NUM_OF_PHASE);
         uint256 tokens;
@@ -445,9 +466,7 @@ contract SCCToken is BasicERC20Token {
     }
 
     function computeTokenAmount(uint256 ethAmount) internal returns (uint256 tokens, uint256 usingEthAmount) {
-        if(block.number - firstblock >= phaseBlock[currentPhase]) {
-            currentPhase += 1;
-        }
+        updateCurrentPhase();
         if(currentPhase >= NUM_OF_PHASE) {
             revert();
         }
@@ -477,25 +496,28 @@ contract SCCToken is BasicERC20Token {
     }
 
     function refund() internal {
-        for(uint i=0; i< issueIndex; i++) {
+        for(uint i=0; i<issueTokens.length; i++) {
             uint256 tokens = issueTokens[i].tokens;
             address recipient = issueTokens[i].recipient;
 
-            /// No enough tokens to refund
-            if(balanceOf[recipient] < tokens) {
-                revert();
+            /// Make sure that address owner has enough tokens to refund
+            if(balanceOf[recipient] >= tokens) {
+                balanceOf[recipient] = balanceOf[recipient].sub(tokens);
+                balanceOf[target] = balanceOf[target].add(tokens);
+
+                uint256 refundCharge = issueTokens[i].usingEthAmount.div(100).mul(charge);
+                uint256 refundAmount = issueTokens[i].usingEthAmount.sub(refundCharge);
+
+                if(!recipient.send(refundAmount)) {
+                    revert();
+                }
+                Refund(
+                    refundIndex++,
+                    recipient,
+                    refundAmount,
+                    tokens
+                );
             }
-
-            balanceOf[recipient] = balanceOf[recipient].sub(tokens);
-            balanceOf[target] = balanceOf[target].add(tokens);
-
-            uint256 refundCharge = issueTokens[i].usingEthAmount.div(100).mul(charge);
-            uint256 refundAmount = issueTokens[i].usingEthAmount.sub(refundCharge);
-
-            if(!recipient.send(refundAmount)) {
-                revert();
-            }
-
         }
     }
 
@@ -504,7 +526,8 @@ contract SCCToken is BasicERC20Token {
     }
 
     function saleEnded() public constant returns (bool) {
-        return firstblock > 0 && ((currentPhase >= NUM_OF_PHASE) || hardCapReached());
+        return firstblock > 0
+            && ((currentPhase >= NUM_OF_PHASE) || (block.number - firstblock > phaseBlock[NUM_OF_PHASE-1]) || hardCapReached());
     }
 
     function hardCapReached() public constant returns (bool) {
