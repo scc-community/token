@@ -64,7 +64,9 @@ library SafeMath {
     }
 }
 
-interface tokenRecipient { function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) public; }
+interface tokenRecipient {
+    function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) external;
+}
 
 contract BasicERC20Token {
     // Public variables of the token
@@ -72,7 +74,7 @@ contract BasicERC20Token {
     uint256 public totalSupply;
 
     // This creates an array with all balances
-    mapping (address => uint256) public balance;
+    mapping (address => uint256) public balances;
     mapping (address => mapping (address => uint256)) public allowance;
 
     // This generates a public event on the blockchain that will notify clients
@@ -88,18 +90,22 @@ contract BasicERC20Token {
         // Prevent transfer to 0x0 address. Use burn() instead
         require(_to != 0x0);
         // Check if the sender has enough
-        require(balance[_from] >= _value);
+        require(balances[_from] >= _value);
         // Check for overflows
-        require(balance[_to] + _value > balance[_to]);
+        require(balances[_to] + _value > balances[_to]);
         // Save this for an assertion in the future
-        uint previousBalances = balance[_from] + balance[_to];
+        uint previousBalances = balances[_from] + balances[_to];
         // Subtract from the sender
-        balance[_from] -= _value;
+        balances[_from] -= _value;
         // Add the same to the recipient
-        balance[_to] += _value;
-        Transfer(_from, _to, _value);
+        balances[_to] += _value;
+        emit Transfer(_from, _to, _value);
         // Asserts are used to use static analysis to find bugs in your code. They should never fail
-        assert(balance[_from] + balance[_to] == previousBalances);
+        assert(balances[_from] + balances[_to] == previousBalances);
+    }
+
+    function balanceOf(address _owner) public constant returns (uint256 balance) {
+        return balances[_owner];
     }
 
     /**
@@ -171,10 +177,10 @@ contract BasicERC20Token {
      * @param _value the amount of money to burn
      */
     function burn(uint256 _value) public returns (bool success) {
-        require(balance[msg.sender] >= _value);   // Check if the sender has enough
-        balance[msg.sender] -= _value;            // Subtract from the sender
+        require(balances[msg.sender] >= _value);   // Check if the sender has enough
+        balances[msg.sender] -= _value;            // Subtract from the sender
         totalSupply -= _value;                      // Updates totalSupply
-        Burn(msg.sender, _value);
+        emit Burn(msg.sender, _value);
         return true;
     }
 
@@ -187,52 +193,42 @@ contract BasicERC20Token {
      * @param _value the amount of money to burn
      */
     function burnFrom(address _from, uint256 _value) public returns (bool success) {
-        require(balance[_from] >= _value);                // Check if the targeted balance is enough
+        require(balances[_from] >= _value);                // Check if the targeted balance is enough
         require(_value <= allowance[_from][msg.sender]);    // Check allowance
-        balance[_from] -= _value;                         // Subtract from the targeted balance
+        balances[_from] -= _value;                         // Subtract from the targeted balance
         allowance[_from][msg.sender] -= _value;             // Subtract from the sender's allowance
         totalSupply -= _value;                              // Update totalSupply
-        Burn(_from, _value);
+        emit Burn(_from, _value);
         return true;
     }
 }
 
 
 /**
- * @title Source Code Chain Token.
+ * @title Source Code Chain AI Token.
  * @author Bertrand Huang - <bertrand.huang@sourcecc.io>.
  */
 contract SCCAIToken is BasicERC20Token {
     using SafeMath for uint256;
-    string public name = "Source Code Chain Token";
-    string public symbol = "SCCAI";
+    string public name = "Source Code Chain AI Token";
+    string public symbol = "SCC";
     uint public decimals = 18;
 
-    uint public exchange = 60000;
+    uint public exchange = 100000;
 
     address public target;
 
     address public foundationTarget;
 
-    uint256 public totalEthReceived = 0;
 
-    uint public issueIndex = 0;
-
-    bool public isStart = false;
+    bool public isStart = true;
 
     bool public isClose = false;
-
-    event InvalidCaller(address caller);
-
-    event InvalidState(bytes msg);
-
-    event Issue(uint issueIndex, address addr, uint256 ethAmount, uint256 tokenAmount);
 
     modifier onlyOwner {
         if (target == msg.sender) {
             _;
         } else {
-            InvalidCaller(msg.sender);
             revert();
         }
     }
@@ -241,7 +237,6 @@ contract SCCAIToken is BasicERC20Token {
         if(isStart && !isClose) {
             _;
         }else {
-            InvalidState("Not in progress!");
             revert();
         }
     }
@@ -250,8 +245,10 @@ contract SCCAIToken is BasicERC20Token {
         target = _target;
         foundationTarget = _foundationTarget;
         totalSupply = 10000000000 * 10 ** uint256(decimals);
-        balance[target] = 3000000000 * 10 ** uint256(decimals);
-        balanceOf[foundationTarget] = 7000000000 * 10 ** uint256(decimals);
+        balances[target] = 2000000000 * 10 ** uint256(decimals);
+        balances[foundationTarget] = 8000000000 * 10 ** uint256(decimals);
+        emit Transfer(msg.sender, target, balances[target]);
+        emit Transfer(msg.sender, foundationTarget, balances[foundationTarget]);
     }
 
     function open() public onlyOwner {
@@ -264,48 +261,29 @@ contract SCCAIToken is BasicERC20Token {
         isClose = true;
     }
 
-    function () payable public{
-        issueToken(msg.sender);
+
+    function () payable public {
+        issueToken();
     }
 
+    function issueToken() payable inProgress public{
+        assert(balances[target] > 0);
+        assert(msg.value >= 0.0001 ether);
+        uint256 tokens = msg.value.mul(exchange);
 
-    function issueToken(address recipient) payable inProgress public{
-        assert(balance[target] > 0);
-        uint256 tokens;
-        uint256 usingEthAmount;
-        (tokens, usingEthAmount) = computeTokenAmount(msg.value);
-
-        totalEthReceived = totalEthReceived.add(usingEthAmount);
-        balance[target] = balance[target].sub(tokens);
-        balance[recipient] = balance[recipient].add(tokens);
-
-        Issue(
-            issueIndex++,
-            recipient,
-            usingEthAmount,
-            tokens
-        );
-
-        if (!target.send(usingEthAmount)) {
+        if (tokens > balances[target]) {
             revert();
         }
 
-        if(usingEthAmount < msg.value) {
-            uint256 returnEthAmount = msg.value - usingEthAmount;
-            if(!recipient.send(returnEthAmount)) {
-                revert();
-            }
-        }
-    }
+        balances[target] = balances[target].sub(tokens);
+        balances[msg.sender] = balances[msg.sender].add(tokens);
 
-    function computeTokenAmount(uint256 ethAmount) internal returns (uint256 tokens, uint256 usingEthAmount) {
-        tokens = ethAmount.mul(exchange);
-        if(tokens <= balance[target]) {
-            usingEthAmount = ethAmount;
-        }else {
-            tokens = balance[target];
-            usingEthAmount = remainTokens.div(exchange);
+        emit Transfer(target, msg.sender, tokens);
+
+        if (!target.send(msg.value)) {
+            revert();
         }
+
     }
 
 }
